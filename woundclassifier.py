@@ -23,7 +23,7 @@ class ReduceMaxLayer(tf.keras.layers.Layer):
     def call(self, inputs):
         return tf.reduce_max(inputs, axis=self.axis, keepdims=self.keepdims)
 class WoundClassifier:
-    def __init__(self, model_path=None, class_labels=['ok', 'suggest', 'urgent'], input_size=(224, 224, 3), num_classes=3, learning_rate=1e-4, decay_steps=1200,decay_rate=0.86, dropout_rate=0.2):
+    def __init__(self, model_path=None, class_labels=['ok', 'suggest', 'urgent'], input_size=(224, 224, 3), num_classes=3, learning_rate=5e-5, decay_steps=1200,decay_rate=0.86, dropout_rate=0.2):
         self.class_labels = class_labels
         self.input_size = input_size[:2]
         self.num_classes = num_classes
@@ -79,22 +79,22 @@ class WoundClassifier:
 
         inputs = tf.keras.Input(shape=input_shape)
 
-        x = tf.keras.layers.Conv2D(32, 3, padding='same')(inputs)
+        x = tf.keras.layers.Conv2D(32, 3, strides=2, padding='same')(inputs)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Activation('relu')(x)
-        x = tf.keras.layers.MaxPooling2D()(x)
+        # x = tf.keras.layers.MaxPooling2D()(x)
         x = self.cbam_block(x)
 
-        x = tf.keras.layers.Conv2D(64, 3, padding='same')(x)
+        x = tf.keras.layers.Conv2D(64, 3, strides=2, padding='same')(x)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Activation('relu')(x)
-        x = tf.keras.layers.MaxPooling2D()(x)
+        # x = tf.keras.layers.MaxPooling2D()(x)
         x = self.cbam_block(x)
 
-        x = tf.keras.layers.Conv2D(128, 3, padding='same')(x)
+        x = tf.keras.layers.Conv2D(128, 3, strides=2, padding='same')(x)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Activation('relu')(x)
-        x = tf.keras.layers.MaxPooling2D()(x)
+        # x = tf.keras.layers.MaxPooling2D()(x)
         # x = self.cbam_block(x)
 
         # x = tf.keras.layers.Conv2D(256, 3, padding='same')(inputs)
@@ -147,7 +147,7 @@ class WoundClassifier:
         }
         return message[label]
     
-    def train(self, dir, save_dir, batch_size=32, epochs=30, validation_split=0.2):
+    def train(self, dir, save_dir, batch_size=32, epochs=40, validation_split=0.2):
         train_ds = tf.keras.utils.image_dataset_from_directory(
             str(dir + '/train'),
             validation_split=validation_split,
