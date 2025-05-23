@@ -183,7 +183,7 @@ class WoundClassifier:
         val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
         test_ds = test_ds.cache().prefetch(buffer_size=AUTOTUNE)
 
-        avg_val_loss = float('-inf')
+        avg_val_loss = float('inf')
         patience = 8
         patience_counter = 0
         best_weights = None
@@ -205,10 +205,10 @@ class WoundClassifier:
                 train_y_pred.extend(np.argmax(predictions, axis=1))
             report = classification_report(train_y_true, train_y_pred, target_names=self.class_labels)
 
-            if val_loss < avg_val_loss:
+            if val_loss < avg_val_loss and i > 0:
                 patience_counter = 0
                 best_weights = self.model.get_weights()
-            elif val_loss > avg_val_loss:
+            elif val_loss > avg_val_loss and i > 0:
                 patience_counter += 1
                 if patience_counter >= patience:
                     print(f"Early stopping at Epoch {i+1}")
