@@ -24,15 +24,12 @@ class ReduceMaxLayer(tf.keras.layers.Layer):
     def call(self, inputs):
         return tf.reduce_max(inputs, axis=self.axis, keepdims=self.keepdims)
 class WoundClassifier:
-    def __init__(self, model_path=None, class_labels=['ok', 'suggest', 'urgent'], input_size=(224, 224, 3), num_classes=3, learning_rate=5e-5, decay_steps=1200,decay_rate=0.86, dropout_rate=0.2):
+    def __init__(self, model_path=None, class_labels=['ok', 'suggest', 'urgent'], input_size=(224, 224, 3), num_classes=3, learning_rate=6e-5, dropout_rate=0.2):
         self.class_labels = class_labels
         self.input_size = input_size[:2]
         self.num_classes = num_classes
         self.learning_rate = learning_rate
-        self.decay_steps = decay_steps
-        self.decay_rate = decay_rate
         self.dropout_rate = dropout_rate
-        # self.class_alpha = tf.constant([0.6, 0.2, 0.2], dtype=tf.float32)
         
         if model_path:
             print(f"Loading model from {model_path}")
@@ -66,16 +63,12 @@ class WoundClassifier:
         
         return tf.keras.layers.Multiply()([channel_refined, spatial_refined])
     
-    
-    def focal_loss(self, gamma=2.0, alpha=0.25):
+    def focal_loss(self, gamma=2.0, alpha=0.2):
         @tf.keras.utils.register_keras_serializable()
         def loss_fn(y_true, y_pred):
             y_true = tf.one_hot(tf.cast(y_true, tf.int32), depth=tf.shape(y_pred)[-1])
             cross_entropy = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
             pt = tf.reduce_sum(y_true * y_pred, axis=-1)
-
-            # alpha_weighted_cross_entropy = cross_entropy * tf.reduce_sum(y_true * self.class_alpha, axis=-1)
-            
             return alpha * tf.pow(1. - pt, gamma) * cross_entropy
         return loss_fn
     
@@ -87,43 +80,26 @@ class WoundClassifier:
         x = tf.keras.layers.Conv2D(32, 3, strides=2, padding='same')(inputs)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Activation('relu')(x)
-        # x = tf.keras.layers.MaxPooling2D()(x)
         x = self.cbam_block(x)
 
         x = tf.keras.layers.Conv2D(64, 3, strides=2, padding='same')(x)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Activation('relu')(x)
-        # x = tf.keras.layers.MaxPooling2D()(x)
         x = self.cbam_block(x)
 
         x = tf.keras.layers.Conv2D(128, 3, strides=2, padding='same')(x)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Activation('relu')(x)
-        # x = tf.keras.layers.MaxPooling2D()(x)
-        # x = self.cbam_block(x)
-
-        # x = tf.keras.layers.Conv2D(256, 3, strides=2, padding='same')(x)
-        # x = tf.keras.layers.BatchNormalization()(x)
-        # x = tf.keras.layers.Activation('relu')(x)
-        # x = tf.keras.layers.MaxPooling2D()(x)
 
         x = tf.keras.layers.GlobalAveragePooling2D()(x)
-        x = tf.keras.layers.Dense(128, activation='relu')(x)
-        # x = tf.keras.layers.Dense(128, activation='relu')(x)
-        # x = tf.keras.layers.Dense(32, activation='relu')(x)
+        x = tf.keras.layers.Dense(256, activation='relu')(x)
         x = tf.keras.layers.Dropout(self.dropout_rate)(x)
         
         outputs = tf.keras.layers.Dense(self.num_classes, activation='softmax', dtype='float32')(x)
 
         model = tf.keras.Model(inputs, outputs)
-        
-        lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=self.learning_rate,
-            decay_steps=self.decay_steps,
-            decay_rate=self.decay_rate
-        )
        
-        optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
         model.compile(optimizer=optimizer, loss=self.focal_loss(), metrics=['accuracy'])
         return model
@@ -206,22 +182,9 @@ class WoundClassifier:
         train_ds = train_ds.cache().prefetch(buffer_size=AUTOTUNE)
         val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
         test_ds = test_ds.cache().prefetch(buffer_size=AUTOTUNE)
-        
-        # val_early_stopping = tf.keras.callbacks.EarlyStopping(
-        #     monitor='val_loss',
-        #     patience=8,
-        #     restore_best_weights=True
-        # )
-
-        # lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
-        #     monitor='val_loss',
-        #     factor=0.5,         
-        #     patience=3,         
-        #     min_lr=1e-6
-        # )
 
         avg_val_loss = float('-inf')
-        patience = 3
+        patience = 8
         patience_counter = 0
         best_weights = None
         val_loss_history = deque(maxlen=5)
