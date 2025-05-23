@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import cv2
 from sklearn.metrics import classification_report
+from collections import deque
 
 @tf.keras.utils.register_keras_serializable()
 class ReduceMeanLayer(tf.keras.layers.Layer):
@@ -31,6 +32,7 @@ class WoundClassifier:
         self.decay_steps = decay_steps
         self.decay_rate = decay_rate
         self.dropout_rate = dropout_rate
+        # self.class_alpha = tf.constant([0.6, 0.2, 0.2], dtype=tf.float32)
         
         if model_path:
             print(f"Loading model from {model_path}")
@@ -65,12 +67,15 @@ class WoundClassifier:
         return tf.keras.layers.Multiply()([channel_refined, spatial_refined])
     
     
-    def focal_loss(self, gamma=2.0, alpha=0.2):
+    def focal_loss(self, gamma=2.0, alpha=0.25):
         @tf.keras.utils.register_keras_serializable()
         def loss_fn(y_true, y_pred):
             y_true = tf.one_hot(tf.cast(y_true, tf.int32), depth=tf.shape(y_pred)[-1])
             cross_entropy = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
             pt = tf.reduce_sum(y_true * y_pred, axis=-1)
+
+            # alpha_weighted_cross_entropy = cross_entropy * tf.reduce_sum(y_true * self.class_alpha, axis=-1)
+            
             return alpha * tf.pow(1. - pt, gamma) * cross_entropy
         return loss_fn
     
@@ -97,14 +102,17 @@ class WoundClassifier:
         # x = tf.keras.layers.MaxPooling2D()(x)
         # x = self.cbam_block(x)
 
-        # x = tf.keras.layers.Conv2D(256, 3, padding='same')(inputs)
+        # x = tf.keras.layers.Conv2D(256, 3, strides=2, padding='same')(x)
         # x = tf.keras.layers.BatchNormalization()(x)
         # x = tf.keras.layers.Activation('relu')(x)
         # x = tf.keras.layers.MaxPooling2D()(x)
 
         x = tf.keras.layers.GlobalAveragePooling2D()(x)
         x = tf.keras.layers.Dense(128, activation='relu')(x)
+        # x = tf.keras.layers.Dense(128, activation='relu')(x)
+        # x = tf.keras.layers.Dense(32, activation='relu')(x)
         x = tf.keras.layers.Dropout(self.dropout_rate)(x)
+        
         outputs = tf.keras.layers.Dense(self.num_classes, activation='softmax', dtype='float32')(x)
 
         model = tf.keras.Model(inputs, outputs)
@@ -115,7 +123,7 @@ class WoundClassifier:
             decay_rate=self.decay_rate
         )
        
-        optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
         model.compile(optimizer=optimizer, loss=self.focal_loss(), metrics=['accuracy'])
         return model
@@ -199,31 +207,66 @@ class WoundClassifier:
         val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
         test_ds = test_ds.cache().prefetch(buffer_size=AUTOTUNE)
         
-        val_early_stopping = tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=8,
-            restore_best_weights=True
-        )
+        # val_early_stopping = tf.keras.callbacks.EarlyStopping(
+        #     monitor='val_loss',
+        #     patience=8,
+        #     restore_best_weights=True
+        # )
 
-        lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,         
-            patience=3,         
-            min_lr=1e-6
-        )
+        # lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
+        #     monitor='val_loss',
+        #     factor=0.5,         
+        #     patience=3,         
+        #     min_lr=1e-6
+        # )
 
-        self.model.fit(train_ds, validation_data=val_ds,epochs=epochs, verbose=1, callbacks=[val_early_stopping, lr_scheduler])
-        print("Training completed.")
+        avg_val_loss = float('-inf')
+        patience = 3
+        patience_counter = 0
+        best_weights = None
+        val_loss_history = deque(maxlen=5)
+
+        for i in range(epochs):
+            self.model.fit(train_ds, validation_data=val_ds,epochs=1, verbose=1)
+            
+            val_loss, _ = self.model.evaluate(val_ds, verbose=0)
+            if len(val_loss_history) > 0:
+                avg_val_loss = sum(val_loss_history) / len(val_loss_history)
+            
+            val_loss_history.append(val_loss)
+            
+            train_y_true, train_y_pred = [], []
+            for images, labels in test_ds:
+                train_y_true.extend(labels.numpy())
+                predictions = self.model.predict(images, verbose=0)
+                train_y_pred.extend(np.argmax(predictions, axis=1))
+            report = classification_report(train_y_true, train_y_pred, target_names=self.class_labels)
+
+            if val_loss < avg_val_loss:
+                patience_counter = 0
+                best_weights = self.model.get_weights()
+            elif val_loss > avg_val_loss:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"Early stopping at Epoch {i+1}")
+                    break
+            print(report)
+            print(f"Epoch {i+1}/{epochs} completed.")
+
+        if best_weights is not None:
+            self.model.set_weights(best_weights)
+            print("Best weights restored.")
+
+        test_y_true, test_y_pred = [], []
+        for images, labels in test_ds:
+            test_y_true.extend(labels.numpy())
+            predictions = self.model.predict(images)
+            test_y_pred.extend(np.argmax(predictions, axis=1))
+
         loss, accuracy = self.model.evaluate(test_ds, verbose=1)
         print(f"Test Loss: {loss:.4f}, Test accuracy: {accuracy:.4f}")
 
-        y_true, y_pred = [], []
-        for images, labels in test_ds:
-            y_true.extend(labels.numpy())
-            predictions = self.model.predict(images)
-            y_pred.extend(np.argmax(predictions, axis=1))
-
-        report = classification_report(y_true, y_pred, target_names=self.class_labels)
+        report = classification_report(test_y_true, test_y_pred, target_names=self.class_labels)
         print(report)
         self.model.save(save_dir)
         print("Model saved.")
