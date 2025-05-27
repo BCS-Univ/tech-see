@@ -2,6 +2,8 @@ import tensorflow as tf
 import sys
 import os
 from woundclassifier import WoundClassifier
+from sklearn.metrics import classification_report
+
 def main():
     if len(sys.argv) != 4:
         print("Usage: python main.py <method> [<data_path>] [<model_path>] [<img_path>]")
@@ -26,12 +28,19 @@ def main():
             print(f"Image path {img_path} does not exist.")
             return
         
-        for img in os.listdir(img_path):
-            full_img_path = os.path.join(img_path, img)
-            if os.path.isfile(full_img_path):
-                print(f"Processing image: {full_img_path}")
-                res = classifier.take_action(full_img_path)
-                print(f"Result for {full_img_path}: {res}")
+        y_true, y_pred = [], []
+        for class_folder in os.listdir(img_path):
+            class_folder_path = os.path.join(img_path, class_folder)
+            for img in os.listdir(class_folder_path):
+                full_img_path = os.path.join(class_folder_path, img)
+                if os.path.isfile(full_img_path):
+                    print(f"Processing image: {full_img_path}")
+                    pred_label, _ = classifier.predict(full_img_path)
+                    res = classifier.take_action(full_img_path)
+                    print(f"Result for {full_img_path}: {res}")
+                    y_true.append(class_folder)
+                    y_pred.append(pred_label)
+        print(classification_report(y_true, y_pred, target_names=classifier.class_labels))
     
 if __name__ == "__main__":
     main()
