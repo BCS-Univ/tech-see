@@ -2,7 +2,6 @@ import tensorflow as tf
 import numpy as np
 import cv2
 from sklearn.metrics import classification_report
-from collections import deque
 
 @tf.keras.utils.register_keras_serializable()
 class ReduceMeanLayer(tf.keras.layers.Layer):
@@ -23,8 +22,27 @@ class ReduceMaxLayer(tf.keras.layers.Layer):
 
     def call(self, inputs):
         return tf.reduce_max(inputs, axis=self.axis, keepdims=self.keepdims)
+
+@tf.keras.utils.register_keras_serializable()
+class SobelLayer(tf.keras.layers.Layer):
+    def call(self, x):
+        sobel = tf.image.sobel_edges(x)
+        sobel = tf.reduce_sum(tf.square(sobel), axis=-1)
+        sobel = tf.sqrt(tf.reduce_sum(sobel, axis=-1, keepdims=True))
+        return sobel
+
+@tf.keras.utils.register_keras_serializable()
+class FFTLayer(tf.keras.layers.Layer):
+    def call(self, x):
+        x_gray = tf.image.rgb_to_grayscale(x)
+        x_gray = tf.cast(x_gray, tf.complex64)
+        fft = tf.signal.fft2d(x_gray)
+        magnitude = tf.abs(fft)
+        log_mag = tf.math.log1p(magnitude)
+        norm = log_mag / tf.reduce_max(log_mag)
+        return norm
 class WoundClassifier:
-    def __init__(self, model_path=None, class_labels=['ok', 'suggest', 'urgent'], input_size=(224, 224, 3), num_classes=3, learning_rate=6e-5, dropout_rate=0.2):
+    def __init__(self, model_path=None, class_labels=['ok', 'suggest', 'urgent'], input_size=(224, 224, 3), num_classes=3, learning_rate=5e-5, dropout_rate=0.2):
         self.class_labels = class_labels
         self.input_size = input_size[:2]
         self.num_classes = num_classes
@@ -71,13 +89,16 @@ class WoundClassifier:
             pt = tf.reduce_sum(y_true * y_pred, axis=-1)
             return alpha * tf.pow(1. - pt, gamma) * cross_entropy
         return loss_fn
-    
+
     def build_model(self, input_shape):
         tf.keras.mixed_precision.set_global_policy('mixed_float16')
 
-        inputs = tf.keras.Input(shape=input_shape)
+        rgb_input = tf.keras.Input(shape=input_shape)
+        sobel_output = SobelLayer()(rgb_input)
+        fft_output = FFTLayer()(rgb_input)
+        x = tf.keras.layers.Concatenate(axis=-1)([rgb_input, sobel_output, fft_output])
 
-        x = tf.keras.layers.Conv2D(32, 3, strides=2, padding='same')(inputs)
+        x = tf.keras.layers.Conv2D(32, 3, strides=2, padding='same')(x)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.Activation('relu')(x)
         x = self.cbam_block(x)
@@ -94,13 +115,14 @@ class WoundClassifier:
         x = tf.keras.layers.GlobalAveragePooling2D()(x)
         x = tf.keras.layers.Dense(256, activation='relu')(x)
         x = tf.keras.layers.Dropout(self.dropout_rate)(x)
-        
+
         outputs = tf.keras.layers.Dense(self.num_classes, activation='softmax', dtype='float32')(x)
 
-        model = tf.keras.Model(inputs, outputs)
-       
+        model = tf.keras.Model(inputs=rgb_input, outputs=outputs)
+
         optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+
         model.compile(optimizer=optimizer, loss=self.focal_loss(), metrics=['accuracy'])
         return model
     
@@ -131,7 +153,7 @@ class WoundClassifier:
         }
         return message[label]
     
-    def train(self, dir, save_dir, batch_size=32, epochs=40, validation_split=0.2):
+    def train(self, dir, save_dir, batch_size=32, epochs=30, validation_split=0.2):
         train_ds = tf.keras.utils.image_dataset_from_directory(
             str(dir + '/train'),
             validation_split=validation_split,
@@ -183,21 +205,16 @@ class WoundClassifier:
         val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
         test_ds = test_ds.cache().prefetch(buffer_size=AUTOTUNE)
 
-        avg_val_loss = float('inf')
+        avg_val_loss = 0
         patience = 8
         patience_counter = 0
         best_weights = None
-        val_loss_history = deque(maxlen=5)
 
         for i in range(epochs):
             self.model.fit(train_ds, validation_data=val_ds,epochs=1, verbose=1)
             
             val_loss, _ = self.model.evaluate(val_ds, verbose=0)
-            if len(val_loss_history) > 0:
-                avg_val_loss = sum(val_loss_history) / len(val_loss_history)
-            
-            val_loss_history.append(val_loss)
-            
+            avg_val_loss = avg_val_loss * 0.7 + val_loss * 0.3
             train_y_true, train_y_pred = [], []
             for images, labels in test_ds:
                 train_y_true.extend(labels.numpy())
